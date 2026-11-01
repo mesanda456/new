@@ -78,3 +78,4 @@ export function inspectAndSanitizePayload(rawInput: string): DLPInspectionResult
     wafBlocked: false,
   };
 }
+
