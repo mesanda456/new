@@ -1,0 +1,107 @@
+// AegisCloud Enterprise Multi-Tenant PostgreSQL Schema (Prisma ORM)
+// Supports strict tenant isolation, SHA-256 hashed API keys, progressive feature flags,
+// and an append-only SHA-256 hash-chained cryptographic audit ledger.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TenantTier {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum RoleName {
+  OWNER
+  ADMIN
+  DEVELOPER
+  AUDITOR
+  SERVICE_CLIENT
+}
+
+enum KeyStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum AuditSeverity {
+  INFO
+  WARN
+  CRITICAL
+}
+
+model TenantOrganization {
+  id                  String         @id @default(cuid())
+  name                String
+  slug                String         @unique
+  tier                TenantTier     @default(PRO)
+  region              String         @default("us-east-1")
+  rateLimitPerMinute  Int            @default(120)
+  burstFactor         Float          @default(1.2)
+  monthlyQuota        Int            @default(1000000)
+  requestsThisMonth   Int            @default(0)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  apiKeys             ApiKeyRecord[]
+  auditLogs           AuditLogEntry[]
+
+  @@index([slug])
+}
+
+model ApiKeyRecord {
+  id                  String             @id @default(cuid())
+  tenantId            String
+  name                String
+  prefix              String
+  keyHash             String             @unique // SHA-256 hex digest (zero plaintext storage)
+  role                RoleName           @default(DEVELOPER)
+  scopes              String[]
+  rateLimitPerMinute  Int                @default(60)
+  status              KeyStatus          @default(ACTIVE)
+  createdAt           DateTime           @default(now())
+  lastUsedAt          DateTime?
+
+  tenant              TenantOrganization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([keyHash])
+}
+
+model FeatureFlag {
+  key                 String   @id
+  name                String
+  description         String
+  enabled             Boolean  @default(true)
+  rolloutPercentage   Int      @default(0) // 0..100 deterministic SHA-256 bucket
+  targetTenants       String[]
+  rules               Json     @default("[]")
+  updatedAt           DateTime @updatedAt
+}
+
+model AuditLogEntry {
+  id                  String             @id @default(cuid())
+  sequence            Int                @unique @default(autoincrement())
+  timestamp           DateTime           @default(now())
+  tenantId            String
+  actorId             String
+  actorType           String
+  action              String
+  resource            String
+  severity            AuditSeverity      @default(INFO)
+  ipAddress           String
+  metadata            Json
+  previousHash        String             // Links to sequence - 1 hash (or GENESIS_HASH)
+  hash                String             @unique // HMAC-SHA256 digest of canonical entry
+
+  tenant              TenantOrganization @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, sequence(sort: Desc)])
+}
+

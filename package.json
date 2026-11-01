@@ -1,0 +1,24 @@
+{
+  "name": "aegis-cloud-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Enterprise Multi-Tenant API Gateway, Feature Flag Engine & Cryptographic Audit Ledger",
+  "scripts": {
+    "build": "npm run build:core && npm run build:web",
+    "build:core": "npm --workspace=@aegis/core run build",
+    "build:web": "npm --workspace=@aegis/web run build",
+    "dev": "npm --workspace=@aegis/web run dev",
+    "test": "npm --workspace=@aegis/core run test",
+    "lint": "npm --workspace=@aegis/web run lint"
+  },
+  "workspaces": [
+    "packages/core",
+    "apps/web"
+  ],
+  "author": "Enterprise Systems Architect",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
+

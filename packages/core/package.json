@@ -1,0 +1,23 @@
+{
+  "name": "@aegis/core",
+  "version": "1.0.0",
+  "description": "Core cryptographic engines: SHA-256 hash-chained audit ledger, sliding-window rate limiter, deterministic murmur3 feature flag evaluator, and RBAC policy engine",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test dist/__tests__/*.test.js",
+    "pretest": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}
+

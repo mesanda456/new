@@ -1,0 +1,32 @@
+name: AegisCloud Enterprise CI Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  verify-and-test:
+    name: Build, Typecheck & Cryptographic Engine Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Monorepo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Workspace Dependencies
+        run: npm install
+
+      - name: Build @aegis/core Engine & Run Unit Tests
+        run: npm test
+
+      - name: Build Next.js Enterprise Control Plane
+        run: npm run build:web
+
