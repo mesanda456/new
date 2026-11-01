@@ -9,6 +9,9 @@ import {
   generateApiKey,
   hashApiKey,
   hasScope,
+  MultiRegionCircuitBreaker,
+  WebhookDispatcher,
+  inspectAndSanitizePayload,
 } from '../index';
 
 describe('AuditLedger (SHA-256 Cryptographic Hash Chain)', () => {
@@ -183,4 +186,48 @@ describe('RBAC & API Key Security', () => {
     assert.equal(hasScope(issued.record.scopes, 'keys:manage'), false);
   });
 });
+
+describe('MultiRegionCircuitBreaker & Failover', () => {
+  it('trips OPEN on primary outage and automatically fails over to healthy secondary region', () => {
+    const cb = new MultiRegionCircuitBreaker();
+    cb.tripRegion('us-east-1');
+
+    const routeDecision = cb.resolveHealthyRegion('us-east-1');
+    assert.equal(routeDecision.failoverTriggered, true);
+    assert.equal(routeDecision.routedRegion, 'eu-central-1');
+    assert.equal(routeDecision.circuitState, 'OPEN');
+
+    cb.recoverRegion('us-east-1');
+    const recoveredDecision = cb.resolveHealthyRegion('us-east-1');
+    assert.equal(recoveredDecision.failoverTriggered, false);
+    assert.equal(recoveredDecision.routedRegion, 'us-east-1');
+  });
+});
+
+describe('WebhookDispatcher & DLP Scrubber', () => {
+  it('signs webhook payloads with HMAC-SHA256, schedules exponential retries, and scrubs PII/SQLi', () => {
+    const dispatcher = new WebhookDispatcher('whsec_test_key');
+    const failedDelivery = dispatcher.dispatch({
+      tenantId: 'tenant_stripe_fin',
+      eventType: 'payment.intent.succeeded',
+      targetUrl: 'https://api.apexfintech.io/webhooks',
+      payload: { amountUsd: 4200 },
+      simulateFailure: true,
+    });
+
+    assert.equal(failedDelivery.status, 'RETRY_SCHEDULED');
+    assert.ok(failedDelivery.hmacSignature.includes('v1='));
+
+    const dlp = inspectAndSanitizePayload(
+      'Customer alice@corp.com card 4532-0151-1283-8899 token aegis_live_secret_123'
+    );
+    assert.equal(dlp.wafBlocked, false);
+    assert.equal(dlp.redactedCount, 3);
+    assert.ok(dlp.sanitizedPayload.includes('[REDACTED_PAN_****_8899]'));
+
+    const waf = inspectAndSanitizePayload("SELECT * FROM users WHERE id = 1 OR 1=1 --");
+    assert.equal(waf.wafBlocked, true);
+  });
+});
+
 

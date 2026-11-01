@@ -136,9 +136,46 @@ interface ApiKeyRecord {
   createdAt: string;
 }
 
+interface RegionClusterHealth {
+  region: 'us-east-1' | 'eu-central-1' | 'ap-south-1';
+  name: string;
+  state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+  failureCount: number;
+  successCount: number;
+  failureThreshold: number;
+  p95LatencyMs: number;
+  errorRatePercent: number;
+  lastStateChange: string;
+  isPrimary: boolean;
+}
+
+interface WebhookEventDelivery {
+  id: string;
+  tenantId: string;
+  eventType: string;
+  targetUrl: string;
+  status: 'DELIVERED' | 'RETRY_SCHEDULED' | 'DEAD_LETTER_QUEUE';
+  attemptCount: number;
+  maxAttempts: number;
+  nextRetryDelaySeconds: number;
+  hmacSignature: string;
+  payload: Record<string, unknown>;
+  lastHttpStatus: number;
+  updatedAt: string;
+}
+
+interface DLPInspectionResult {
+  originalPayload: string;
+  sanitizedPayload: string;
+  redactedCount: number;
+  detectedTypes: string[];
+  wafBlocked: boolean;
+  wafReason?: string;
+}
+
 export function ControlPlaneDashboard() {
   const [activeTab, setActiveTab] = useState<
-    'gateway' | 'flags' | 'audit' | 'keys' | 'architecture'
+    'gateway' | 'resilience' | 'flags' | 'audit' | 'keys' | 'architecture'
   >('gateway');
 
   const [tenants, setTenants] = useState<TenantOrganization[]>([]);
@@ -187,19 +224,29 @@ export function ControlPlaneDashboard() {
   const [newlyIssuedSecret, setNewlyIssuedSecret] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
 
+  // Resilience, Webhooks & DLP state
+  const [regions, setRegions] = useState<RegionClusterHealth[]>([]);
+  const [webhooks, setWebhooks] = useState<WebhookEventDelivery[]>([]);
+  const [dlpInput, setDlpInput] = useState(
+    '{"customerEmail":"ceo@apexfintech.io","cardNumber":"4532-0151-1283-8899","ssn":"123-45-6789","auth":"Bearer aegis_live_secret_token_99"}'
+  );
+  const [dlpResult, setDlpResult] = useState<DLPInspectionResult | null>(null);
+
   const fetchAllData = useCallback(async (tenantId: string) => {
     try {
-      const [gwRes, flagsRes, auditRes, keysRes] = await Promise.all([
+      const [gwRes, flagsRes, auditRes, keysRes, resRes] = await Promise.all([
         fetch(`/api/v1/gateway?tenantId=${tenantId}`),
         fetch(`/api/v1/flags?tenantId=${tenantId}`),
         fetch(`/api/v1/audit`),
         fetch(`/api/v1/keys`),
+        fetch(`/api/v1/resilience`),
       ]);
 
       const gwData = await gwRes.json();
       const flagsData = await flagsRes.json();
       const auditData = await auditRes.json();
       const keysData = await keysRes.json();
+      const resData = await resRes.json();
 
       setTenants(gwData.tenants || []);
       setRateLimitSnapshot(gwData.rateLimitSnapshot || null);
@@ -216,6 +263,8 @@ export function ControlPlaneDashboard() {
         auditData.verification || { valid: true, totalEntries: 0, verifiedEntries: 0 }
       );
       setApiKeys(keysData.keys || []);
+      setRegions(resData.regions || []);
+      setWebhooks(resData.webhooks || []);
     } catch (err) {
       console.error('Failed to synchronize Control Plane state:', err);
     }
@@ -360,6 +409,58 @@ export function ControlPlaneDashboard() {
     setTimeout(() => setCopiedCurl(false), 2000);
   };
 
+  const handleRegionAction = async (
+    action: 'TRIP_REGION' | 'HALF_OPEN_REGION' | 'RECOVER_REGION',
+    region: string
+  ) => {
+    await fetch('/api/v1/resilience', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, region, tenantId: selectedTenantId }),
+    });
+    await fetchAllData(selectedTenantId);
+  };
+
+  const handleDispatchWebhook = async (simulateFailure: boolean) => {
+    await fetch('/api/v1/resilience', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'DISPATCH_WEBHOOK',
+        tenantId: selectedTenantId,
+        eventType: simulateFailure ? 'security.rate_limit.breached' : 'payment.intent.succeeded',
+        simulateFailure,
+      }),
+    });
+    await fetchAllData(selectedTenantId);
+  };
+
+  const handleReplayDlq = async () => {
+    await fetch('/api/v1/resilience', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'REPLAY_DLQ', tenantId: selectedTenantId }),
+    });
+    await fetchAllData(selectedTenantId);
+  };
+
+  const handleInspectDlp = async (customPayload?: string) => {
+    const payloadToInspect = customPayload ?? dlpInput;
+    if (customPayload) setDlpInput(customPayload);
+    const res = await fetch('/api/v1/resilience', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'INSPECT_DLP',
+        tenantId: selectedTenantId,
+        payload: payloadToInspect,
+      }),
+    });
+    const data = await res.json();
+    setDlpResult(data.inspection);
+    await fetchAllData(selectedTenantId);
+  };
+
   const navItems = [
     {
       id: 'gateway',
@@ -367,6 +468,14 @@ export function ControlPlaneDashboard() {
       sublabel: 'Rate Limiting & Live Proxy',
       icon: Terminal,
       badge: `${recentTraces.length}`,
+    },
+    {
+      id: 'resilience',
+      label: 'Resilience, Webhooks & DLP',
+      sublabel: 'Circuit Breakers, DLQ & WAF',
+      icon: Globe,
+      badge: regions.some((r) => r.state === 'OPEN') ? 'FAILOVER' : '3 REGIONS',
+      alert: regions.some((r) => r.state === 'OPEN'),
     },
     {
       id: 'flags',
@@ -1237,6 +1346,264 @@ export function ControlPlaneDashboard() {
             </div>
           )}
 
+          {/* TAB 1.5: MULTI-REGION CIRCUIT BREAKERS, SIGNED WEBHOOK DLQ & ZERO-TRUST DLP */}
+          {activeTab === 'resilience' && (
+            <div className="space-y-6">
+              {/* Row 1: Multi-Region Circuit Breakers & Failover Mesh */}
+              <div className="rounded-2xl border border-slate-800/90 bg-gradient-to-b from-slate-900/60 to-slate-950/90 p-5 sm:p-6 shadow-xl">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                  <div>
+                    <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Globe className="h-4 w-4 text-cyan-400" />
+                      Multi-Region Circuit Breakers & Automatic Failover Mesh
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Trip a regional cluster to <code className="text-rose-300">OPEN</code> to
+                      watch traffic automatically fail over to healthy sovereign regions.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {regions.map((r) => (
+                    <div
+                      key={r.region}
+                      className={`rounded-xl border p-4 flex flex-col justify-between gap-4 transition ${
+                        r.state === 'CLOSED'
+                          ? 'border-slate-800 bg-slate-950/70'
+                          : r.state === 'HALF_OPEN'
+                          ? 'border-amber-500/40 bg-amber-500/5'
+                          : 'border-rose-500/50 bg-rose-500/10'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-xs font-bold text-white">
+                            {r.region}
+                          </span>
+                          <span
+                            className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                              r.state === 'CLOSED'
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                : r.state === 'HALF_OPEN'
+                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                : 'bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse'
+                            }`}
+                          >
+                            CIRCUIT: {r.state}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-400 mt-1">{r.name}</div>
+
+                        <div className="grid grid-cols-2 gap-2 mt-3 pt-3 border-t border-slate-800/80 font-mono text-xs">
+                          <div>
+                            <div className="text-[10px] text-slate-500">P95 LATENCY</div>
+                            <div
+                              className={
+                                r.state === 'OPEN'
+                                  ? 'text-rose-400 font-bold'
+                                  : 'text-emerald-400 font-bold'
+                              }
+                            >
+                              {r.p95LatencyMs} ms
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-slate-500">ERROR RATE</div>
+                            <div
+                              className={
+                                r.state === 'OPEN' ? 'text-rose-400 font-bold' : 'text-slate-200'
+                              }
+                            >
+                              {r.errorRatePercent}%
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2 pt-2">
+                        {r.state === 'CLOSED' ? (
+                          <button
+                            onClick={() => handleRegionAction('TRIP_REGION', r.region)}
+                            className="w-full py-2 px-3 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-semibold transition"
+                          >
+                            Simulate Outage (Trip OPEN)
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => handleRegionAction('HALF_OPEN_REGION', r.region)}
+                              className="flex-1 py-2 px-2.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-semibold transition"
+                            >
+                              Probe (HALF_OPEN)
+                            </button>
+                            <button
+                              onClick={() => handleRegionAction('RECOVER_REGION', r.region)}
+                              className="flex-1 py-2 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition"
+                            >
+                              Restore (CLOSED)
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Row 2: Signed Webhook Outbox & DLQ + Edge DLP & WAF Scrubber */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Left 7 Cols: Signed Webhook Outbox & Dead-Letter Queue */}
+                <div className="lg:col-span-7 rounded-2xl border border-slate-800/90 bg-gradient-to-b from-slate-900/60 to-slate-950/90 p-5 sm:p-6 shadow-xl flex flex-col justify-between">
+                  <div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                      <div>
+                        <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                          <Zap className="h-4 w-4 text-indigo-400" />
+                          Signed Webhook Outbox & Dead-Letter Queue (DLQ)
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Payloads signed with <code className="text-indigo-300">HMAC-SHA256</code>{' '}
+                          and retried with exponential backoff
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => handleDispatchWebhook(false)}
+                          className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition"
+                        >
+                          + Emit Event (200)
+                        </button>
+                        <button
+                          onClick={() => handleDispatchWebhook(true)}
+                          className="px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-semibold transition"
+                        >
+                          Simulate 503 Timeout
+                        </button>
+                        <button
+                          onClick={handleReplayDlq}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition"
+                        >
+                          Replay DLQ
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-[10px] font-mono uppercase text-slate-400 bg-slate-950/60">
+                            <th className="py-2.5 px-3">State</th>
+                            <th className="py-2.5 px-3">Event Type</th>
+                            <th className="py-2.5 px-3">Attempts & Backoff</th>
+                            <th className="py-2.5 px-3">HMAC-SHA256 Signature</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 font-mono">
+                          {webhooks.map((wh) => (
+                            <tr key={wh.id} className="hover:bg-slate-800/30">
+                              <td className="py-2.5 px-3">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                    wh.status === 'DELIVERED'
+                                      ? 'bg-emerald-500/15 text-emerald-300'
+                                      : wh.status === 'RETRY_SCHEDULED'
+                                      ? 'bg-amber-500/15 text-amber-300'
+                                      : 'bg-rose-500/20 text-rose-300'
+                                  }`}
+                                >
+                                  {wh.status} (HTTP {wh.lastHttpStatus})
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-200">{wh.eventType}</td>
+                              <td className="py-2.5 px-3 text-slate-400">
+                                {wh.attemptCount}/{wh.maxAttempts}{' '}
+                                {wh.nextRetryDelaySeconds > 0 &&
+                                  `• next in ${wh.nextRetryDelaySeconds}s`}
+                              </td>
+                              <td className="py-2.5 px-3 text-indigo-300 text-[11px] truncate max-w-[160px]">
+                                {wh.hmacSignature.slice(0, 26)}...
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right 5 Cols: Zero-Trust Edge PII Redaction & WAF Inspector */}
+                <div className="lg:col-span-5 rounded-2xl border border-slate-800/90 bg-gradient-to-b from-slate-900/60 to-slate-950/90 p-5 sm:p-6 shadow-xl flex flex-col justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Lock className="h-4 w-4 text-emerald-400" />
+                      Zero-Trust Edge DLP & OWASP WAF Scrubber
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Automatically masks Credit Cards, SSNs, Emails, and Bearer Tokens at the edge,
+                      and blocks SQLi/XSS payloads before they hit PostgreSQL.
+                    </p>
+
+                    <div className="mt-3 space-y-2.5">
+                      <textarea
+                        rows={3}
+                        value={dlpInput}
+                        onChange={(e) => setDlpInput(e.target.value)}
+                        className="w-full rounded-xl bg-slate-950 border border-slate-800 p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500/60"
+                      />
+
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => handleInspectDlp()}
+                          className="flex-1 py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition"
+                        >
+                          Run DLP & WAF Inspection
+                        </button>
+                        <button
+                          onClick={() =>
+                            handleInspectDlp(
+                              "SELECT * FROM tenants WHERE slug = 'apex' UNION SELECT credit_card FROM users --"
+                            )
+                          }
+                          className="py-2 px-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-semibold transition"
+                        >
+                          Test SQLi Attack
+                        </button>
+                      </div>
+                    </div>
+
+                    {dlpResult && (
+                      <div className="mt-4 p-3.5 rounded-xl border border-slate-800 bg-slate-950 font-mono text-xs space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">Edge WAF Verdict:</span>
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              dlpResult.wafBlocked
+                                ? 'bg-rose-500/20 text-rose-300'
+                                : 'bg-emerald-500/15 text-emerald-300'
+                            }`}
+                          >
+                            {dlpResult.wafBlocked
+                              ? 'BLOCKED (OWASP CRS MATCH)'
+                              : `PASSED (${dlpResult.redactedCount} PII REDACTED)`}
+                          </span>
+                        </div>
+                        {dlpResult.detectedTypes.length > 0 && (
+                          <div className="text-[11px] text-cyan-300">
+                            Redacted PII: {dlpResult.detectedTypes.join(', ')}
+                          </div>
+                        )}
+                        <div className="text-[11px] text-emerald-300 break-all bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                          {dlpResult.sanitizedPayload}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* TAB 2: FEATURE FLAG & ROLLOUT ENGINE */}
           {activeTab === 'flags' && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -1776,9 +2143,15 @@ serve  = bucket < flag.rolloutPercentage`}
         </main>
 
         {/* Mobile Fixed Bottom Navigation Dock (sm:hidden) */}
-        <nav className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-[#070a14]/95 backdrop-blur-xl border-t border-slate-800/90 px-2 py-1.5 flex items-center justify-around">
+        <nav className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-[#070a14]/95 backdrop-blur-xl border-t border-slate-800/90 px-1.5 py-1.5 flex items-center justify-around">
           {[
             { id: 'gateway', shortLabel: 'Gateway', icon: Terminal },
+            {
+              id: 'resilience',
+              shortLabel: 'Failover',
+              icon: Globe,
+              alert: regions.some((r) => r.state === 'OPEN'),
+            },
             { id: 'flags', shortLabel: 'Flags', icon: Flag },
             {
               id: 'audit',
@@ -1786,7 +2159,7 @@ serve  = bucket < flag.rolloutPercentage`}
               icon: ShieldCheck,
               alert: !chainVerification.valid,
             },
-            { id: 'keys', shortLabel: 'RBAC Keys', icon: KeyRound },
+            { id: 'keys', shortLabel: 'Keys', icon: KeyRound },
             { id: 'architecture', shortLabel: 'ADRs', icon: Network },
           ].map((tab) => {
             const Icon = tab.icon;

@@ -9,6 +9,8 @@ import {
   PermissionScope,
   RoleName,
   FeatureFlagConfig,
+  MultiRegionCircuitBreaker,
+  WebhookDispatcher,
 } from '@aegis/core';
 
 export interface TenantOrganization {
@@ -60,6 +62,8 @@ class EnterpriseControlPlaneStore {
   public readonly ledger: AuditLedger;
   public readonly rateLimiter: SlidingWindowRateLimiter;
   public readonly flagEngine: FeatureFlagEngine;
+  public readonly circuitBreaker: MultiRegionCircuitBreaker;
+  public readonly webhookDispatcher: WebhookDispatcher;
   public tenants: Map<string, TenantOrganization> = new Map();
   public apiKeys: Map<string, ApiKeyRecord> = new Map();
   public demoRawKeys: Record<string, string> = {};
@@ -70,6 +74,8 @@ class EnterpriseControlPlaneStore {
     this.ledger = new AuditLedger([], 'aegis-production-hmac-key-2026');
     this.rateLimiter = new SlidingWindowRateLimiter();
     this.flagEngine = new FeatureFlagEngine();
+    this.circuitBreaker = new MultiRegionCircuitBreaker();
+    this.webhookDispatcher = new WebhookDispatcher();
     this.seedInitialEnterpriseData();
   }
 
@@ -336,6 +342,32 @@ class EnterpriseControlPlaneStore {
         requiredScope: 'gateway:proxy',
       });
     }
+
+    // Seed initial signed webhook deliveries (including 1 in retry backoff and 1 in DLQ)
+    this.webhookDispatcher.dispatch({
+      tenantId: 'tenant_stripe_fin',
+      eventType: 'payment.intent.succeeded',
+      targetUrl: 'https://webhooks.apexfintech.io/v1/events',
+      payload: { intentId: 'pi_994812', amountUsd: 14500, currency: 'USD' },
+      simulateFailure: false,
+    });
+    this.webhookDispatcher.dispatch({
+      tenantId: 'tenant_medcore_ai',
+      eventType: 'flag.rollout.updated',
+      targetUrl: 'https://events.medcore-diagnostics.eu/hooks',
+      payload: { flagKey: 'llm-multi-region-failover', rolloutPercentage: 50 },
+      simulateFailure: true,
+    });
+    const dlqItem = this.webhookDispatcher.dispatch({
+      tenantId: 'tenant_stripe_fin',
+      eventType: 'security.rate_limit.breached',
+      targetUrl: 'https://siem.apexfintech.io/ingest',
+      payload: { ip: '198.51.100.74', route: '/v1/payments/intents', status: 429 },
+      simulateFailure: true,
+    });
+    this.webhookDispatcher.retryDelivery(dlqItem.id, true);
+    this.webhookDispatcher.retryDelivery(dlqItem.id, true);
+    this.webhookDispatcher.retryDelivery(dlqItem.id, true);
   }
 
   public executeGatewayRequest(params: {
@@ -528,7 +560,8 @@ const globalForAegis = globalThis as unknown as {
 export function getControlPlaneStore(): EnterpriseControlPlaneStore {
   if (
     !globalForAegis.aegisControlPlaneStore ||
-    globalForAegis.aegisControlPlaneStore.recentTraces.length === 0
+    globalForAegis.aegisControlPlaneStore.recentTraces.length === 0 ||
+    !globalForAegis.aegisControlPlaneStore.circuitBreaker
   ) {
     globalForAegis.aegisControlPlaneStore = new EnterpriseControlPlaneStore();
   }
