@@ -569,24 +569,30 @@ export function ControlPlaneDashboard() {
       {/* MAIN WORKSPACE */}
       <div className="flex-1 flex flex-col min-w-0 z-10">
         {/* Top Utility Bar */}
-        <header className="sticky top-0 z-30 h-16 border-b border-slate-800/80 bg-[#05070e]/85 backdrop-blur-xl px-6 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <span className="font-mono text-slate-500">aegis-mesh</span>
-            <ChevronRight className="h-3.5 w-3.5 text-slate-600" />
-            <span className="font-mono text-indigo-400 font-semibold">
-              {activeTenant?.slug || 'apex-fintech'}
-            </span>
-            <ChevronRight className="h-3.5 w-3.5 text-slate-600" />
-            <span className="text-white font-semibold">
-              {navItems.find((n) => n.id === activeTab)?.label}
-            </span>
+        <header className="sticky top-0 z-30 h-14 sm:h-16 border-b border-slate-800/80 bg-[#05070e]/90 backdrop-blur-xl px-3.5 sm:px-6 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="xl:hidden h-8 w-8 shrink-0 rounded-lg bg-gradient-to-br from-indigo-500 via-indigo-600 to-cyan-500 flex items-center justify-center shadow-md shadow-indigo-500/20">
+              <ShieldCheck className="h-4 w-4 text-white" />
+            </div>
+            <div className="flex items-center gap-1.5 text-xs text-slate-400 truncate">
+              <span className="font-bold text-white xl:hidden">AEGIS</span>
+              <span className="font-mono text-slate-500 hidden sm:inline">aegis-mesh</span>
+              <ChevronRight className="h-3.5 w-3.5 text-slate-600 shrink-0" />
+              <span className="font-mono text-indigo-400 font-semibold truncate hidden md:inline">
+                {activeTenant?.slug || 'apex-fintech'}
+              </span>
+              <ChevronRight className="h-3.5 w-3.5 text-slate-600 shrink-0 hidden md:inline" />
+              <span className="text-white font-semibold truncate">
+                {navItems.find((n) => n.id === activeTab)?.label}
+              </span>
+            </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 shrink-0">
             {/* Cryptographic Chain Status Pill */}
             <button
               onClick={() => setActiveTab('audit')}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-mono transition ${
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border text-[11px] sm:text-xs font-mono transition ${
                 chainVerification.valid
                   ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/15'
                   : 'bg-rose-500/15 border-rose-500/50 text-rose-300 animate-pulse'
@@ -594,26 +600,30 @@ export function ControlPlaneDashboard() {
             >
               {chainVerification.valid ? (
                 <>
-                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                  <span>
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                  <span className="hidden sm:inline">
                     SHA-256 LEDGER VERIFIED ({chainVerification.verifiedEntries} BLOCKS)
                   </span>
+                  <span className="sm:hidden">#{chainVerification.verifiedEntries} SEALED</span>
                 </>
               ) : (
                 <>
-                  <ShieldAlert className="h-3.5 w-3.5 text-rose-400" />
-                  <span>TAMPER ALERT AT BLOCK #{chainVerification.brokenAtSequence}</span>
+                  <ShieldAlert className="h-3.5 w-3.5 text-rose-400 shrink-0" />
+                  <span className="hidden sm:inline">
+                    TAMPER ALERT AT BLOCK #{chainVerification.brokenAtSequence}
+                  </span>
+                  <span className="sm:hidden">TAMPERED</span>
                 </>
               )}
             </button>
 
             {/* Mobile Tenant Switcher */}
-            <div className="xl:hidden flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5">
+            <div className="xl:hidden flex items-center bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5">
               <select
                 aria-label="Select Active Tenant Organization"
                 value={selectedTenantId}
                 onChange={(e) => setSelectedTenantId(e.target.value)}
-                className="bg-transparent text-xs font-semibold text-white focus:outline-none"
+                className="bg-transparent text-[11px] sm:text-xs font-semibold text-white focus:outline-none max-w-[130px] sm:max-w-none truncate"
               >
                 {tenants.map((t) => (
                   <option key={t.id} value={t.id} className="bg-slate-900 text-white">
@@ -625,8 +635,8 @@ export function ControlPlaneDashboard() {
           </div>
         </header>
 
-        {/* Mobile Navigation Bar */}
-        <div className="xl:hidden flex overflow-x-auto gap-2 px-6 py-3 border-b border-slate-800/80 bg-[#070a14]">
+        {/* Tablet Navigation Bar (sm..xl) */}
+        <div className="hidden sm:flex xl:hidden overflow-x-auto gap-2 px-4 py-2.5 border-b border-slate-800/80 bg-[#070a14]">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
@@ -648,7 +658,7 @@ export function ControlPlaneDashboard() {
         </div>
 
         {/* Main Scrollable Content */}
-        <main className="max-w-[1400px] w-full mx-auto px-6 py-6 space-y-6">
+        <main className="max-w-[1400px] w-full mx-auto px-3.5 sm:px-6 pt-4 sm:pt-6 pb-24 sm:pb-8 space-y-5 sm:space-y-6">
           {/* Top Executive KPI Ribbon */}
           <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Card 1 */}
@@ -870,7 +880,7 @@ export function ControlPlaneDashboard() {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className="block text-[10px] font-mono uppercase tracking-wider text-slate-400 mb-1.5">
                           Subject ID (Sticky Hash)
@@ -879,7 +889,7 @@ export function ControlPlaneDashboard() {
                           type="text"
                           value={simSubjectId}
                           onChange={(e) => setSimSubjectId(e.target.value)}
-                          className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500/60"
+                          className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2.5 text-xs font-mono text-white focus:outline-none focus:border-indigo-500/60"
                         />
                       </div>
                       <div>
@@ -890,7 +900,7 @@ export function ControlPlaneDashboard() {
                           aria-label="Required RBAC Scope"
                           value={simScope}
                           onChange={(e) => setSimScope(e.target.value)}
-                          className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500/60"
+                          className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2.5 text-xs font-mono text-white focus:outline-none focus:border-indigo-500/60"
                         >
                           <option value="gateway:proxy">gateway:proxy</option>
                           <option value="flags:write">flags:write</option>
@@ -918,11 +928,11 @@ export function ControlPlaneDashboard() {
                       </select>
                     </div>
 
-                    <div className="pt-2 flex flex-wrap gap-2.5">
+                    <div className="pt-2 grid grid-cols-2 sm:flex sm:flex-wrap gap-2.5">
                       <button
                         disabled={isSending}
                         onClick={() => fireGatewayRequest(1)}
-                        className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 disabled:opacity-50 text-white font-semibold text-xs py-2.5 px-4 rounded-xl shadow-lg shadow-indigo-600/25 transition"
+                        className="col-span-2 sm:flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 active:scale-[0.99] disabled:opacity-50 text-white font-semibold text-xs py-3 sm:py-2.5 px-4 rounded-xl shadow-lg shadow-indigo-600/25 transition"
                       >
                         <Zap className="h-3.5 w-3.5" />
                         Dispatch Request
@@ -931,20 +941,20 @@ export function ControlPlaneDashboard() {
                       <button
                         disabled={isSending}
                         onClick={() => fireGatewayRequest(10)}
-                        className="flex items-center justify-center gap-1.5 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 font-semibold text-xs py-2.5 px-3.5 rounded-xl transition"
+                        className="flex items-center justify-center gap-1.5 bg-amber-500/15 hover:bg-amber-500/25 active:scale-[0.99] border border-amber-500/40 text-amber-300 font-semibold text-xs py-2.5 px-3.5 rounded-xl transition"
                         title="Send 10 rapid requests to trigger HTTP 429 Sliding-Window Rate Limiting"
                       >
                         <Flame className="h-3.5 w-3.5 text-amber-400" />
-                        10× Load Spike
+                        10× Spike
                       </button>
 
                       <button
                         onClick={resetRateLimitBucket}
-                        className="flex items-center justify-center gap-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs py-2.5 px-3 rounded-xl transition"
+                        className="flex items-center justify-center gap-1.5 bg-slate-900 hover:bg-slate-800 active:scale-[0.99] border border-slate-800 text-slate-300 text-xs py-2.5 px-3 rounded-xl transition"
                         title="Reset sliding-window quota for this tenant"
                       >
                         <RotateCcw className="h-3.5 w-3.5" />
-                        Reset
+                        Reset Quota
                       </button>
                     </div>
                   </div>
@@ -978,29 +988,29 @@ export function ControlPlaneDashboard() {
                       </span>
                     </div>
 
-                    <div className="p-5 font-mono text-xs space-y-1.5 leading-relaxed">
+                    <div className="p-4 sm:p-5 font-mono text-xs space-y-1.5 leading-relaxed overflow-x-auto">
                       <div className="text-slate-500 text-[11px]">
                         # Standard IETF RateLimit & Cryptographic Governance Headers
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex flex-wrap justify-between gap-2">
                         <span className="text-indigo-400">x-aegis-edge-latency:</span>
                         <span className="text-slate-200">{latestTrace.latencyMs} ms</span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex flex-wrap justify-between gap-2">
                         <span className="text-indigo-400">x-ratelimit-limit:</span>
                         <span className="text-slate-200">{latestTrace.rateLimit.limit}</span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex flex-wrap justify-between gap-2">
                         <span className="text-indigo-400">x-ratelimit-remaining:</span>
                         <span className="text-slate-200">{latestTrace.rateLimit.remaining}</span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex flex-wrap justify-between gap-2">
                         <span className="text-indigo-400">x-sliding-window-weight:</span>
                         <span className="text-cyan-300">{latestTrace.rateLimit.currentWeight}</span>
                       </div>
                       {latestTrace.flagEvaluation && (
-                        <div className="flex justify-between">
-                          <span className="text-cyan-400">
+                        <div className="flex flex-wrap justify-between gap-2">
+                          <span className="text-cyan-400 break-all">
                             x-feature-flag-{latestTrace.flagEvaluation.flagKey}:
                           </span>
                           <span
@@ -1011,15 +1021,15 @@ export function ControlPlaneDashboard() {
                             }
                           >
                             {String(latestTrace.flagEvaluation.value)} (
-                            {latestTrace.flagEvaluation.reason} • bucket=
+                            {latestTrace.flagEvaluation.reason} • b=
                             {latestTrace.flagEvaluation.bucketScore})
                           </span>
                         </div>
                       )}
-                      <div className="flex justify-between pt-1 border-t border-slate-800/80">
+                      <div className="flex flex-wrap justify-between gap-2 pt-1 border-t border-slate-800/80">
                         <span className="text-emerald-400">x-audit-sha256-seal:</span>
-                        <span className="text-emerald-300">
-                          #{latestTrace.auditSequence} • {latestTrace.auditHash.slice(0, 20)}...
+                        <span className="text-emerald-300 break-all">
+                          #{latestTrace.auditSequence} • {latestTrace.auditHash.slice(0, 18)}...
                         </span>
                       </div>
                     </div>
@@ -1764,6 +1774,40 @@ serve  = bucket < flag.rolloutPercentage`}
             </div>
           )}
         </main>
+
+        {/* Mobile Fixed Bottom Navigation Dock (sm:hidden) */}
+        <nav className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-[#070a14]/95 backdrop-blur-xl border-t border-slate-800/90 px-2 py-1.5 flex items-center justify-around">
+          {[
+            { id: 'gateway', shortLabel: 'Gateway', icon: Terminal },
+            { id: 'flags', shortLabel: 'Flags', icon: Flag },
+            {
+              id: 'audit',
+              shortLabel: 'Ledger',
+              icon: ShieldCheck,
+              alert: !chainVerification.valid,
+            },
+            { id: 'keys', shortLabel: 'RBAC Keys', icon: KeyRound },
+            { id: 'architecture', shortLabel: 'ADRs', icon: Network },
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as typeof activeTab)}
+                className={`relative flex flex-col items-center justify-center py-1 px-2.5 rounded-xl transition ${
+                  isActive ? 'text-indigo-400' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {tab.alert && (
+                  <span className="absolute top-1 right-2 h-2 w-2 rounded-full bg-rose-500 animate-ping" />
+                )}
+                <Icon className={`h-4 w-4 ${isActive ? 'text-indigo-400' : 'text-slate-400'}`} />
+                <span className="text-[10px] font-medium mt-0.5">{tab.shortLabel}</span>
+              </button>
+            );
+          })}
+        </nav>
       </div>
     </div>
   );
