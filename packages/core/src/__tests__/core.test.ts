@@ -12,6 +12,9 @@ import {
   MultiRegionCircuitBreaker,
   WebhookDispatcher,
   inspectAndSanitizePayload,
+  IdempotencyEngine,
+  AiTokenGovernor,
+  CanaryTrafficSplitter,
 } from '../index';
 
 describe('AuditLedger (SHA-256 Cryptographic Hash Chain)', () => {
@@ -229,5 +232,78 @@ describe('WebhookDispatcher & DLP Scrubber', () => {
     assert.equal(waf.wafBlocked, true);
   });
 });
+
+describe('IdempotencyEngine (RFC Idempotency-Key)', () => {
+  it('replays cached responses on duplicate retries and rejects payload conflicts with 422', () => {
+    const engine = new IdempotencyEngine();
+
+    const first = engine.executeOrReplay({
+      tenantId: 'tenant_stripe_fin',
+      idempotencyKey: 'idem_payment_99182',
+      endpoint: 'POST /v1/payments/intents',
+      payload: { amountUsd: 2500, currency: 'USD' },
+      responseFactory: () => ({
+        statusCode: 200,
+        body: { chargeId: 'ch_live_8812', settled: true },
+      }),
+    });
+    assert.equal(first.status, 'EXECUTED_FRESH');
+    assert.equal(first.isCachedReplay, false);
+
+    // Retry with identical key and payload -> returns cached response without re-running factory
+    const replay = engine.executeOrReplay({
+      tenantId: 'tenant_stripe_fin',
+      idempotencyKey: 'idem_payment_99182',
+      endpoint: 'POST /v1/payments/intents',
+      payload: { amountUsd: 2500, currency: 'USD' },
+      responseFactory: () => ({
+        statusCode: 200,
+        body: { chargeId: 'ch_SHOULD_NOT_HAPPEN', settled: true },
+      }),
+    });
+    assert.equal(replay.status, 'REPLAYED_FROM_CACHE');
+    assert.equal(replay.isCachedReplay, true);
+    assert.equal(replay.record.responseBody.chargeId, 'ch_live_8812');
+
+    // Retry with same key but mutated amount -> 422 conflict
+    const conflict = engine.executeOrReplay({
+      tenantId: 'tenant_stripe_fin',
+      idempotencyKey: 'idem_payment_99182',
+      endpoint: 'POST /v1/payments/intents',
+      payload: { amountUsd: 999999, currency: 'USD' },
+      responseFactory: () => ({ statusCode: 200, body: {} }),
+    });
+    assert.equal(conflict.status, 'CONFLICT_PAYLOAD_MISMATCH');
+  });
+});
+
+describe('AiTokenGovernor & CanaryTrafficSplitter', () => {
+  it('meters LLM tokens, serves semantic cache hits at $0 cost, and auto-rolls back bad canaries', () => {
+    const governor = new AiTokenGovernor();
+    const firstCall = governor.meterInference({
+      tenantId: 'tenant_stripe_fin',
+      modelId: 'claude-3-7-sonnet',
+      prompt: 'Summarize Q4 PCI-DSS compliance audit controls',
+    });
+    assert.equal(firstCall.semanticCacheHit, false);
+    assert.ok(firstCall.costUsd > 0);
+
+    // Second identical prompt hits semantic cache at $0.00 cost
+    const cachedCall = governor.meterInference({
+      tenantId: 'tenant_stripe_fin',
+      modelId: 'claude-3-7-sonnet',
+      prompt: 'Summarize Q4 PCI-DSS compliance audit controls',
+    });
+    assert.equal(cachedCall.semanticCacheHit, true);
+    assert.equal(cachedCall.costUsd, 0);
+
+    // Canary auto-rollback test
+    const canary = new CanaryTrafficSplitter();
+    const rolledBack = canary.simulateCanaryRegression();
+    assert.equal(rolledBack.status, 'AUTO_ROLLED_BACK');
+    assert.equal(rolledBack.canaryWeightPercent, 0);
+  });
+});
+
 
 

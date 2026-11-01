@@ -5,3 +5,6 @@ export * from './rbac';
 export * from './circuit-breaker';
 export * from './webhook-dispatcher';
 export * from './dlp-scrubber';
+export * from './idempotency';
+export * from './ai-governor';
+export * from './canary-router';

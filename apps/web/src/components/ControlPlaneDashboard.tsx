@@ -173,9 +173,66 @@ interface DLPInspectionResult {
   wafReason?: string;
 }
 
+interface IdempotentRecord {
+  idempotencyKey: string;
+  tenantId: string;
+  endpoint: string;
+  payloadHash: string;
+  statusCode: number;
+  responseBody: Record<string, unknown>;
+  createdAt: string;
+  expiresAt: string;
+  replayCount: number;
+}
+
+interface TenantAiBudget {
+  tenantId: string;
+  monthlyBudgetUsd: number;
+  currentSpendUsd: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  semanticCacheHits: number;
+  totalRequests: number;
+}
+
+interface AiGatewayExecution {
+  id: string;
+  tenantId: string;
+  modelId: string;
+  promptPreview: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  semanticCacheHit: boolean;
+  budgetExceeded: boolean;
+  latencyMs: number;
+  timestamp: string;
+}
+
+interface CanaryTrafficDeployment {
+  serviceId: string;
+  serviceName: string;
+  stableVersion: string;
+  canaryVersion: string;
+  canaryWeightPercent: number;
+  stableMetrics: {
+    requests: number;
+    p95LatencyMs: number;
+    errorRatePercent: number;
+  };
+  canaryMetrics: {
+    requests: number;
+    p95LatencyMs: number;
+    errorRatePercent: number;
+  };
+  autoRollbackThresholdPercent: number;
+  status: 'HEALTHY_SPLIT' | 'CANARY_PROMOTED' | 'AUTO_ROLLED_BACK';
+  lastUpdated: string;
+}
+
 export function ControlPlaneDashboard() {
   const [activeTab, setActiveTab] = useState<
-    'gateway' | 'resilience' | 'flags' | 'audit' | 'keys' | 'architecture'
+    'gateway' | 'resilience' | 'finops' | 'flags' | 'audit' | 'keys' | 'architecture'
   >('gateway');
 
   const [tenants, setTenants] = useState<TenantOrganization[]>([]);
@@ -232,14 +289,28 @@ export function ControlPlaneDashboard() {
   );
   const [dlpResult, setDlpResult] = useState<DLPInspectionResult | null>(null);
 
+  // FinOps, Idempotency & Canary state
+  const [idempotencyRecords, setIdempotencyRecords] = useState<IdempotentRecord[]>([]);
+  const [idemKeyInput, setIdemKeyInput] = useState('idem_wire_transfer_88412');
+  const [idemAmountInput, setIdemAmountInput] = useState(12500);
+  const [idemLastStatus, setIdemLastStatus] = useState<string | null>(null);
+  const [aiBudget, setAiBudget] = useState<TenantAiBudget | null>(null);
+  const [aiExecutions, setAiExecutions] = useState<AiGatewayExecution[]>([]);
+  const [aiModelInput, setAiModelInput] = useState('claude-3-7-sonnet');
+  const [aiPromptInput, setAiPromptInput] = useState(
+    'Analyze real-time wire transfer fraud risk vector for merchant #8841'
+  );
+  const [canaryDeployment, setCanaryDeployment] = useState<CanaryTrafficDeployment | null>(null);
+
   const fetchAllData = useCallback(async (tenantId: string) => {
     try {
-      const [gwRes, flagsRes, auditRes, keysRes, resRes] = await Promise.all([
+      const [gwRes, flagsRes, auditRes, keysRes, resRes, finRes] = await Promise.all([
         fetch(`/api/v1/gateway?tenantId=${tenantId}`),
         fetch(`/api/v1/flags?tenantId=${tenantId}`),
         fetch(`/api/v1/audit`),
         fetch(`/api/v1/keys`),
         fetch(`/api/v1/resilience`),
+        fetch(`/api/v1/finops?tenantId=${tenantId}`),
       ]);
 
       const gwData = await gwRes.json();
@@ -247,6 +318,7 @@ export function ControlPlaneDashboard() {
       const auditData = await auditRes.json();
       const keysData = await keysRes.json();
       const resData = await resRes.json();
+      const finData = await finRes.json();
 
       setTenants(gwData.tenants || []);
       setRateLimitSnapshot(gwData.rateLimitSnapshot || null);
@@ -265,6 +337,10 @@ export function ControlPlaneDashboard() {
       setApiKeys(keysData.keys || []);
       setRegions(resData.regions || []);
       setWebhooks(resData.webhooks || []);
+      setIdempotencyRecords(finData.idempotencyRecords || []);
+      setAiBudget(finData.aiBudget || null);
+      setAiExecutions(finData.aiExecutions || []);
+      setCanaryDeployment(finData.canaryDeployment || null);
     } catch (err) {
       console.error('Failed to synchronize Control Plane state:', err);
     }
@@ -461,6 +537,54 @@ export function ControlPlaneDashboard() {
     await fetchAllData(selectedTenantId);
   };
 
+  const handleExecuteIdempotent = async (customAmount?: number) => {
+    const amountToUse = customAmount ?? idemAmountInput;
+    if (customAmount !== undefined) setIdemAmountInput(customAmount);
+    const res = await fetch('/api/v1/finops', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'EXECUTE_IDEMPOTENT',
+        tenantId: selectedTenantId,
+        idempotencyKey: idemKeyInput,
+        amountUsd: amountToUse,
+      }),
+    });
+    const data = await res.json();
+    setIdemLastStatus(data.evaluation?.status || null);
+    await fetchAllData(selectedTenantId);
+  };
+
+  const handleMeterAiInference = async () => {
+    await fetch('/api/v1/finops', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'METER_AI_INFERENCE',
+        tenantId: selectedTenantId,
+        modelId: aiModelInput,
+        prompt: aiPromptInput,
+      }),
+    });
+    await fetchAllData(selectedTenantId);
+  };
+
+  const handleCanaryAction = async (
+    action: 'SET_CANARY_WEIGHT' | 'SIMULATE_CANARY_SLO_BREACH' | 'PROMOTE_CANARY',
+    weightPercent?: number
+  ) => {
+    await fetch('/api/v1/finops', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action,
+        tenantId: selectedTenantId,
+        weightPercent,
+      }),
+    });
+    await fetchAllData(selectedTenantId);
+  };
+
   const navItems = [
     {
       id: 'gateway',
@@ -476,6 +600,17 @@ export function ControlPlaneDashboard() {
       icon: Globe,
       badge: regions.some((r) => r.state === 'OPEN') ? 'FAILOVER' : '3 REGIONS',
       alert: regions.some((r) => r.state === 'OPEN'),
+    },
+    {
+      id: 'finops',
+      label: 'AI FinOps, Idempotency & Canary',
+      sublabel: 'Token Metering & Safe Deploys',
+      icon: Sparkles,
+      badge:
+        canaryDeployment?.status === 'AUTO_ROLLED_BACK'
+          ? 'ROLLBACK'
+          : `$${aiBudget?.currentSpendUsd?.toFixed(2) || '18.42'}`,
+      alert: canaryDeployment?.status === 'AUTO_ROLLED_BACK',
     },
     {
       id: 'flags',
@@ -1604,6 +1739,303 @@ export function ControlPlaneDashboard() {
             </div>
           )}
 
+          {/* TAB 1.8: AI FINOPS TOKEN GOVERNOR, IDEMPOTENCY ENGINE & CANARY TRAFFIC SPLITTER */}
+          {activeTab === 'finops' && (
+            <div className="space-y-6">
+              {/* Row 1: Progressive Canary Traffic Splitter & Auto-Rollback Engine */}
+              {canaryDeployment && (
+                <div className="rounded-2xl border border-slate-800/90 bg-gradient-to-b from-slate-900/60 to-slate-950/90 p-5 sm:p-6 shadow-xl">
+                  <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Activity className="h-4 w-4 text-indigo-400" />
+                        <h2 className="text-sm font-bold text-white">
+                          Progressive Canary Traffic Splitter & Automated SLO Rollback
+                        </h2>
+                        <span
+                          className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                            canaryDeployment.status === 'CANARY_PROMOTED'
+                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                              : canaryDeployment.status === 'AUTO_ROLLED_BACK'
+                              ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse'
+                              : 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                          }`}
+                        >
+                          {canaryDeployment.status}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Service: <strong className="text-slate-200">{canaryDeployment.serviceName}</strong>{' '}
+                        • Auto-Rollback SLO Threshold:{' '}
+                        <code className="text-rose-300">
+                          &gt;{canaryDeployment.autoRollbackThresholdPercent}% Error Rate
+                        </code>
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => handleCanaryAction('SIMULATE_CANARY_SLO_BREACH')}
+                        className="px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-semibold transition"
+                      >
+                        Simulate Canary 6.8% Error Spike (Trigger Auto-Rollback)
+                      </button>
+                      <button
+                        onClick={() => handleCanaryAction('PROMOTE_CANARY')}
+                        className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition"
+                      >
+                        Promote Canary to 100%
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Visual Stable vs Canary Split Bar */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between text-xs font-mono">
+                      <span className="text-indigo-300">
+                        STABLE ({canaryDeployment.stableVersion}):{' '}
+                        <strong>{100 - canaryDeployment.canaryWeightPercent}%</strong> (p95:{' '}
+                        {canaryDeployment.stableMetrics.p95LatencyMs}ms • err:{' '}
+                        {canaryDeployment.stableMetrics.errorRatePercent}%)
+                      </span>
+                      <span className="text-cyan-300">
+                        CANARY ({canaryDeployment.canaryVersion}):{' '}
+                        <strong>{canaryDeployment.canaryWeightPercent}%</strong> (p95:{' '}
+                        {canaryDeployment.canaryMetrics.p95LatencyMs}ms • err:{' '}
+                        {canaryDeployment.canaryMetrics.errorRatePercent}%)
+                      </span>
+                    </div>
+
+                    <div className="w-full h-3 rounded-full bg-slate-900 overflow-hidden flex border border-slate-800">
+                      <div
+                        style={{ width: `${100 - canaryDeployment.canaryWeightPercent}%` }}
+                        className="bg-indigo-600 transition-all duration-300"
+                      />
+                      <div
+                        style={{ width: `${canaryDeployment.canaryWeightPercent}%` }}
+                        className="bg-cyan-400 transition-all duration-300"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-3 pt-1">
+                      <span className="text-xs text-slate-400">Adjust Canary Split Weight:</span>
+                      {[0, 10, 25, 50, 75, 100].map((w) => (
+                        <button
+                          key={w}
+                          onClick={() => handleCanaryAction('SET_CANARY_WEIGHT', w)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-mono transition ${
+                            canaryDeployment.canaryWeightPercent === w
+                              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold'
+                              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                          }`}
+                        >
+                          {w}%
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Row 2: AI Token Metering & Semantic Cache + Stripe-Grade Idempotency Engine */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Left 6 Cols: AI Token Metering, Semantic Cache & FinOps Budget Governor */}
+                <div className="lg:col-span-6 rounded-2xl border border-slate-800/90 bg-gradient-to-b from-slate-900/60 to-slate-950/90 p-5 sm:p-6 shadow-xl flex flex-col justify-between gap-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                          <Sparkles className="h-4 w-4 text-amber-400" />
+                          AI Token Metering, Semantic Cache & FinOps Budget
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Send the same prompt twice to see an edge{' '}
+                          <strong className="text-emerald-300">Semantic Cache Hit ($0.00)</strong>
+                        </p>
+                      </div>
+                      {aiBudget && (
+                        <div className="text-right font-mono">
+                          <div className="text-xs font-bold text-white">
+                            ${aiBudget.currentSpendUsd.toFixed(4)} / $
+                            {aiBudget.monthlyBudgetUsd.toFixed(2)}
+                          </div>
+                          <div className="text-[10px] text-emerald-400">
+                            {aiBudget.semanticCacheHits} Semantic Cache Hits
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-3 mt-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <select
+                          aria-label="Select AI Model"
+                          value={aiModelInput}
+                          onChange={(e) => setAiModelInput(e.target.value)}
+                          className="rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono text-white"
+                        >
+                          <option value="claude-3-7-sonnet">claude-3-7-sonnet</option>
+                          <option value="gpt-4o-enterprise">gpt-4o-enterprise</option>
+                          <option value="gemini-2-5-pro">gemini-2-5-pro</option>
+                        </select>
+                        <input
+                          type="text"
+                          value={aiPromptInput}
+                          onChange={(e) => setAiPromptInput(e.target.value)}
+                          className="sm:col-span-2 rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono text-white"
+                        />
+                      </div>
+
+                      <button
+                        onClick={handleMeterAiInference}
+                        className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition"
+                      >
+                        Execute Metered LLM Inference (Test Semantic Cache)
+                      </button>
+                    </div>
+
+                    <div className="mt-4 overflow-x-auto max-h-[210px]">
+                      <table className="w-full text-left border-collapse text-xs font-mono">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-[10px] uppercase text-slate-400 bg-slate-950/60">
+                            <th className="py-2 px-2.5">Model</th>
+                            <th className="py-2 px-2.5">Tokens (In/Out)</th>
+                            <th className="py-2 px-2.5">Cost</th>
+                            <th className="py-2 px-2.5">Cache</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {aiExecutions.map((ex) => (
+                            <tr key={ex.id}>
+                              <td className="py-2 px-2.5 text-slate-200">{ex.modelId}</td>
+                              <td className="py-2 px-2.5 text-slate-400">
+                                {ex.inputTokens}/{ex.outputTokens}
+                              </td>
+                              <td className="py-2 px-2.5 text-emerald-400">
+                                ${ex.costUsd.toFixed(5)}
+                              </td>
+                              <td className="py-2 px-2.5">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                    ex.semanticCacheHit
+                                      ? 'bg-emerald-500/15 text-emerald-300'
+                                      : 'bg-slate-800 text-slate-400'
+                                  }`}
+                                >
+                                  {ex.semanticCacheHit ? 'HIT (2.1ms)' : `MISS (${ex.latencyMs}ms)`}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right 6 Cols: Stripe-Grade RFC Idempotency Key Engine */}
+                <div className="lg:col-span-6 rounded-2xl border border-slate-800/90 bg-gradient-to-b from-slate-900/60 to-slate-950/90 p-5 sm:p-6 shadow-xl flex flex-col justify-between gap-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                          <Lock className="h-4 w-4 text-cyan-400" />
+                          Stripe-Grade Idempotency-Key Engine (Zero Double-Charge)
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Prevents duplicate financial settlements during client network retries
+                        </p>
+                      </div>
+                      {idemLastStatus && (
+                        <span
+                          className={`text-[10px] font-mono font-bold px-2.5 py-1 rounded border ${
+                            idemLastStatus === 'EXECUTED_FRESH'
+                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                              : idemLastStatus === 'REPLAYED_FROM_CACHE'
+                              ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                              : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                          }`}
+                        >
+                          {idemLastStatus}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-3">
+                      <div>
+                        <label className="block text-[10px] font-mono uppercase text-slate-400 mb-1">
+                          Idempotency-Key Header
+                        </label>
+                        <input
+                          type="text"
+                          value={idemKeyInput}
+                          onChange={(e) => setIdemKeyInput(e.target.value)}
+                          className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-mono uppercase text-slate-400 mb-1">
+                          Settlement Amount (USD)
+                        </label>
+                        <input
+                          type="number"
+                          value={idemAmountInput}
+                          onChange={(e) => setIdemAmountInput(Number(e.target.value))}
+                          className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono text-white"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 mt-3">
+                      <button
+                        onClick={() => handleExecuteIdempotent()}
+                        className="flex-1 py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition"
+                      >
+                        Send / Retry Idempotent Transfer
+                      </button>
+                      <button
+                        onClick={() => handleExecuteIdempotent(999999)}
+                        className="py-2 px-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-semibold transition"
+                        title="Send same Idempotency-Key with a different amount to trigger HTTP 422 Conflict"
+                      >
+                        Test 422 Payload Conflict
+                      </button>
+                    </div>
+
+                    <div className="mt-4 overflow-x-auto max-h-[210px]">
+                      <table className="w-full text-left border-collapse text-xs font-mono">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-[10px] uppercase text-slate-400 bg-slate-950/60">
+                            <th className="py-2 px-2.5">Idempotency Key</th>
+                            <th className="py-2 px-2.5">SHA-256 Payload</th>
+                            <th className="py-2 px-2.5">Replays</th>
+                            <th className="py-2 px-2.5">Cached Result</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {idempotencyRecords.map((rec) => (
+                            <tr key={`${rec.tenantId}:${rec.idempotencyKey}`}>
+                              <td className="py-2 px-2.5 text-indigo-300">{rec.idempotencyKey}</td>
+                              <td className="py-2 px-2.5 text-slate-400">
+                                {rec.payloadHash.slice(0, 12)}...
+                              </td>
+                              <td className="py-2 px-2.5 text-cyan-300 font-bold">
+                                {rec.replayCount}×
+                              </td>
+                              <td className="py-2 px-2.5 text-emerald-300 truncate max-w-[160px]">
+                                {JSON.stringify(rec.responseBody)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* TAB 2: FEATURE FLAG & ROLLOUT ENGINE */}
           {activeTab === 'flags' && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -2143,7 +2575,7 @@ serve  = bucket < flag.rolloutPercentage`}
         </main>
 
         {/* Mobile Fixed Bottom Navigation Dock (sm:hidden) */}
-        <nav className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-[#070a14]/95 backdrop-blur-xl border-t border-slate-800/90 px-1.5 py-1.5 flex items-center justify-around">
+        <nav className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-[#070a14]/95 backdrop-blur-xl border-t border-slate-800/90 px-1 py-1.5 flex items-center justify-around">
           {[
             { id: 'gateway', shortLabel: 'Gateway', icon: Terminal },
             {
@@ -2151,6 +2583,12 @@ serve  = bucket < flag.rolloutPercentage`}
               shortLabel: 'Failover',
               icon: Globe,
               alert: regions.some((r) => r.state === 'OPEN'),
+            },
+            {
+              id: 'finops',
+              shortLabel: 'FinOps',
+              icon: Sparkles,
+              alert: canaryDeployment?.status === 'AUTO_ROLLED_BACK',
             },
             { id: 'flags', shortLabel: 'Flags', icon: Flag },
             {

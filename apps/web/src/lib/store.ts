@@ -11,6 +11,9 @@ import {
   FeatureFlagConfig,
   MultiRegionCircuitBreaker,
   WebhookDispatcher,
+  IdempotencyEngine,
+  AiTokenGovernor,
+  CanaryTrafficSplitter,
 } from '@aegis/core';
 
 export interface TenantOrganization {
@@ -64,6 +67,9 @@ class EnterpriseControlPlaneStore {
   public readonly flagEngine: FeatureFlagEngine;
   public readonly circuitBreaker: MultiRegionCircuitBreaker;
   public readonly webhookDispatcher: WebhookDispatcher;
+  public readonly idempotencyEngine: IdempotencyEngine;
+  public readonly aiGovernor: AiTokenGovernor;
+  public readonly canarySplitter: CanaryTrafficSplitter;
   public tenants: Map<string, TenantOrganization> = new Map();
   public apiKeys: Map<string, ApiKeyRecord> = new Map();
   public demoRawKeys: Record<string, string> = {};
@@ -76,6 +82,9 @@ class EnterpriseControlPlaneStore {
     this.flagEngine = new FeatureFlagEngine();
     this.circuitBreaker = new MultiRegionCircuitBreaker();
     this.webhookDispatcher = new WebhookDispatcher();
+    this.idempotencyEngine = new IdempotencyEngine();
+    this.aiGovernor = new AiTokenGovernor();
+    this.canarySplitter = new CanaryTrafficSplitter();
     this.seedInitialEnterpriseData();
   }
 
@@ -368,6 +377,29 @@ class EnterpriseControlPlaneStore {
     this.webhookDispatcher.retryDelivery(dlqItem.id, true);
     this.webhookDispatcher.retryDelivery(dlqItem.id, true);
     this.webhookDispatcher.retryDelivery(dlqItem.id, true);
+
+    // Seed initial Idempotency records & AI Token Metering executions
+    this.idempotencyEngine.executeOrReplay({
+      tenantId: 'tenant_stripe_fin',
+      idempotencyKey: 'idem_wire_transfer_88412',
+      endpoint: 'POST /v1/payments/intents',
+      payload: { amountUsd: 12500, currency: 'USD', beneficiary: 'acct_eu_991' },
+      responseFactory: () => ({
+        statusCode: 200,
+        body: { transferId: 'tr_live_90182a', status: 'SETTLED', feeUsd: 12.5 },
+      }),
+    });
+
+    this.aiGovernor.meterInference({
+      tenantId: 'tenant_stripe_fin',
+      modelId: 'claude-3-7-sonnet',
+      prompt: 'Analyze real-time wire transfer fraud risk vector for merchant #8841',
+    });
+    this.aiGovernor.meterInference({
+      tenantId: 'tenant_medcore_ai',
+      modelId: 'gemini-2-5-pro',
+      prompt: 'Synthesize anonymized clinical radiology report findings',
+    });
   }
 
   public executeGatewayRequest(params: {
@@ -561,7 +593,8 @@ export function getControlPlaneStore(): EnterpriseControlPlaneStore {
   if (
     !globalForAegis.aegisControlPlaneStore ||
     globalForAegis.aegisControlPlaneStore.recentTraces.length === 0 ||
-    !globalForAegis.aegisControlPlaneStore.circuitBreaker
+    !globalForAegis.aegisControlPlaneStore.circuitBreaker ||
+    !globalForAegis.aegisControlPlaneStore.aiGovernor
   ) {
     globalForAegis.aegisControlPlaneStore = new EnterpriseControlPlaneStore();
   }
